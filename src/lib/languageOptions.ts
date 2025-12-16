@@ -10,8 +10,6 @@ export const languageOptions = [
   { label: 'Mandarin', value: 'cmn' },
   { label: 'Hindi', value: 'hin' },
   { label: 'Cantonese', value: 'yue' },
-  { label: 'Japanese', value: 'jpn' },
-  { label: 'Korean', value: 'kor' },
 ];
 
 export default languageOptions;
