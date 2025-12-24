@@ -13,5 +13,6 @@ CREATE TABLE IF NOT EXISTS patient_sessions (
   final_prescription TEXT NOT NULL,
   doctor_notes TEXT,
   document_url TEXT,
+  media_urls TEXT[], -- New field for storing media URLs
   created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-); 
+);

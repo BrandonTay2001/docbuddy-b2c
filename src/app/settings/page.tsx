@@ -33,13 +33,13 @@ export default function Settings() {
         }
 
         // Fetch user settings
-        const response = await fetch(`/api/settings?userId=${user.id}`);
-        if (!response.ok) {
+        const settingsResponse = await fetch(`/api/settings?userId=${user.id}`);
+        if (!settingsResponse.ok) {
           throw new Error('Failed to fetch settings');
         }
-        const data = await response.json();
-        setClinicPrompt(data.settings.clinic_prompt || '');
-        setSummaryPrompt(data.settings.summary_prompt || '');
+        const settingsData = await settingsResponse.json();
+        setClinicPrompt(settingsData.settings.clinic_prompt || '');
+        setSummaryPrompt(settingsData.settings.summary_prompt || '');
       } catch (error) {
         console.error('Error fetching data:', error);
         setError('Failed to load settings');

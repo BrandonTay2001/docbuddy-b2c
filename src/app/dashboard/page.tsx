@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Button from '@/components/Button';
@@ -11,6 +11,8 @@ export default function Dashboard() {
   const [userName, setUserName] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isMounted, setIsMounted] = useState(false);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setIsMounted(true);
@@ -33,6 +35,17 @@ export default function Dashboard() {
 
     fetchUser();
   }, [router]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setIsDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   const handleSignOut = async () => {
     try {
@@ -62,12 +75,57 @@ export default function Dashboard() {
         <header className="flex justify-between items-center mb-12 pb-4 border-b border-border">
           <h1 className="text-3xl font-bold">DocBuddy</h1>
           <div className="flex items-center gap-4">
-            <Link href="/settings" className="text-sm hover:underline">
-              {userName}
-            </Link>
-            <Button variant="secondary" onClick={handleSignOut}>
-              Sign Out
-            </Button>
+            <div className="relative" ref={dropdownRef}>
+              <button
+                type="button"
+                onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+                className="flex items-center gap-1 px-3 py-1.5 text-sm rounded-md border border-border hover:bg-input transition-colors focus:outline-none"
+                aria-expanded={isDropdownOpen}
+                aria-haspopup="true"
+              >
+                <span>{userName}</span>
+                <svg 
+                  xmlns="http://www.w3.org/2000/svg" 
+                  width="16" 
+                  height="16" 
+                  viewBox="0 0 24 24" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  strokeWidth="2" 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round" 
+                  className={`transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`}
+                >
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
+              </button>
+              {isDropdownOpen && (
+                <div className="absolute right-0 mt-2 w-48 rounded-md shadow-lg bg-background border border-border z-10">
+                  <div className="py-1">
+                    <Link
+                      href="/settings"
+                      className="block px-4 py-2 text-sm hover:bg-input"
+                      onClick={() => setIsDropdownOpen(false)}
+                    >
+                      Settings
+                    </Link>
+                    <Link
+                      href="/usage"
+                      className="block px-4 py-2 text-sm hover:bg-input"
+                      onClick={() => setIsDropdownOpen(false)}
+                    >
+                      Usage & Billing
+                    </Link>
+                    <button
+                      className="block w-full text-left px-4 py-2 text-sm hover:bg-input"
+                      onClick={handleSignOut}
+                    >
+                      Sign Out
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         </header>
 
@@ -96,4 +154,4 @@ export default function Dashboard() {
       </div>
     </main>
   );
-} 
+}

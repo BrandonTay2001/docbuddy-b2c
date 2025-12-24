@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Button from '@/components/Button';
 import Input from '@/components/Input';
+import MediaUpload from '@/components/MediaUpload';
 import { getUserProfile } from '@/lib/auth';
 
 export default function NewDocument() {
@@ -17,11 +18,12 @@ export default function NewDocument() {
   const [patientName, setPatientName] = useState('');
   const [patientAge, setPatientAge] = useState('');
   const [summary, setSummary] = useState('');
-  const [examinationResults, setExaminationResults] = useState(''); // New field
+  const [examinationResults, setExaminationResults] = useState('');
   const [diagnosis, setDiagnosis] = useState('');
   const [prescription, setPrescription] = useState('');
-  const [treatmentPlan, setTreatmentPlan] = useState(''); // New field
+  const [treatmentPlan, setTreatmentPlan] = useState('');
   const [doctorNotes, setDoctorNotes] = useState('');
+  const [mediaFiles, setMediaFiles] = useState<File[]>([]); // Changed to File[]
 
   useEffect(() => {
     setIsMounted(true);
@@ -29,7 +31,7 @@ export default function NewDocument() {
 
   const handleCreateDocument = async () => {
     if (!patientName || !patientAge || !diagnosis || !prescription) {
-      setError('Please fill out all required fields.');
+      setError('Please fill out all required fields: name, age, final diagnosis, management');
       return;
     }
     
@@ -43,26 +45,30 @@ export default function NewDocument() {
         throw new Error('User not authenticated');
       }
 
+      // Create FormData to handle both text and files
+      const formData = new FormData();
+      formData.append('userId', user.id);
+      formData.append('patientName', patientName);
+      formData.append('patientAge', patientAge);
+      formData.append('transcript', ''); // Empty since this is a manual document
+      formData.append('summary', summary);
+      formData.append('examinationResults', examinationResults);
+      formData.append('suggestedDiagnosis', diagnosis); // Use final diagnosis as suggested
+      formData.append('suggestedPrescription', prescription); // Use final prescription as suggested
+      formData.append('finalDiagnosis', diagnosis);
+      formData.append('finalPrescription', prescription);
+      formData.append('treatmentPlan', treatmentPlan);
+      formData.append('doctorNotes', doctorNotes);
+      
+      // Add media files
+      mediaFiles.forEach((file, index) => {
+        formData.append(`mediaFile_${index}`, file);
+      });
+
       // Save to database
       const response = await fetch('/api/sessions', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          userId: user.id,
-          patientName,
-          patientAge,
-          transcript: '', // Empty since this is a manual document
-          summary,
-          examinationResults, // New field
-          suggestedDiagnosis: diagnosis, // Use final diagnosis as suggested
-          suggestedPrescription: prescription, // Use final prescription as suggested
-          finalDiagnosis: diagnosis,
-          finalPrescription: prescription,
-          treatmentPlan, // New field
-          doctorNotes,
-        }),
+        body: formData, // Use FormData instead of JSON
       });
 
       if (!response.ok) {
@@ -224,6 +230,13 @@ export default function NewDocument() {
                 placeholder="Add any additional notes or observations"
               />
             </div>
+          </div>
+          
+          <div className="p-6 border border-border rounded-md bg-background">
+            <MediaUpload 
+              onMediaChange={setMediaFiles}
+              existingMedia={mediaFiles}
+            />
           </div>
           
           <div className="flex justify-end gap-4">

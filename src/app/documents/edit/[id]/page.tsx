@@ -4,6 +4,7 @@ import { useState, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Button from '@/components/Button';
+import MediaUpload from '@/components/MediaUpload';
 import { getUserProfile } from '@/lib/auth';
 
 interface Session {
@@ -12,12 +13,13 @@ interface Session {
   age: number;
   transcript: string;
   summary: string;
-  examination_results: string; // Added field
+  examination_results: string;
   final_diagnosis: string;
   final_prescription: string;
-  treatment_plan: string; // Added field
+  treatment_plan: string;
   doctor_notes: string;
   document_url: string;
+  media_urls: string[];
 }
 
 export default function EditDocument({ params }: { params: Promise<{ id: string }> }) {
@@ -31,11 +33,14 @@ export default function EditDocument({ params }: { params: Promise<{ id: string 
   // Form state
   const [transcript, setTranscript] = useState('');
   const [summary, setSummary] = useState('');
-  const [examinationResults, setExaminationResults] = useState(''); // Added field
+  const [examinationResults, setExaminationResults] = useState('');
   const [diagnosis, setDiagnosis] = useState('');
   const [prescription, setPrescription] = useState('');
-  const [treatmentPlan, setTreatmentPlan] = useState(''); // Added field
+  const [treatmentPlan, setTreatmentPlan] = useState('');
   const [doctorNotes, setDoctorNotes] = useState('');
+  const [mediaFiles, setMediaFiles] = useState<File[]>([]);
+  const [existingMediaUrls, setExistingMediaUrls] = useState<string[]>([]);
+  const [mediaToDelete, setMediaToDelete] = useState<string[]>([]);
 
   useEffect(() => {
     const fetchSession = async () => {
@@ -50,16 +55,18 @@ export default function EditDocument({ params }: { params: Promise<{ id: string 
           throw new Error('Failed to fetch session');
         }
         const data = await response.json();
+        console.log('Fetched session data:', data);
         setSession(data.session);
         
         // Initialize form state
         setTranscript(data.session.transcript || 'No transcript available: this is a manually-added document');
         setSummary(data.session.summary || '');
-        setExaminationResults(data.session.examination_results || ''); // Initialize examination results
+        setExaminationResults(data.session.examination_results || '');
         setDiagnosis(data.session.final_diagnosis || '');
         setPrescription(data.session.final_prescription || '');
-        setTreatmentPlan(data.session.treatment_plan || ''); // Initialize treatment plan
+        setTreatmentPlan(data.session.treatment_plan || '');
         setDoctorNotes(data.session.doctor_notes || '');
+        setExistingMediaUrls(data.session.media_urls || []);
       } catch (error) {
         console.error('Error fetching session:', error);
         setError('Failed to load session');
@@ -71,6 +78,12 @@ export default function EditDocument({ params }: { params: Promise<{ id: string 
     fetchSession();
   }, [resolvedParams.id]);
 
+  const handleDeleteExistingMedia = (urlToDelete: string) => {
+    // Remove from display and add to delete list
+    setExistingMediaUrls(prev => prev.filter(url => url !== urlToDelete));
+    setMediaToDelete(prev => [...prev, urlToDelete]);
+  };
+
   const handleSave = async () => {
     try {
       setIsSaving(true);
@@ -81,21 +94,35 @@ export default function EditDocument({ params }: { params: Promise<{ id: string 
         throw new Error('User not found');
       }
 
+      // Create FormData to handle both text and files
+      const formData = new FormData();
+      formData.append('userId', user.id);
+      formData.append('sessionId', resolvedParams.id);
+      formData.append('transcript', transcript);
+      formData.append('summary', summary);
+      formData.append('examinationResults', examinationResults);
+      formData.append('diagnosis', diagnosis);
+      formData.append('prescription', prescription);
+      formData.append('treatmentPlan', treatmentPlan);
+      formData.append('doctorNotes', doctorNotes);
+      
+      // Add remaining existing media URLs
+      formData.append('existingMediaUrls', JSON.stringify(existingMediaUrls));
+      
+      // Add URLs to delete
+      if (mediaToDelete.length > 0) {
+        formData.append('mediaToDelete', JSON.stringify(mediaToDelete));
+      }
+      
+      // Add new media files
+      mediaFiles.forEach((file, index) => {
+        formData.append(`mediaFile_${index}`, file);
+      });
+
       // Update session in database
-      const response = await fetch(`/api/sessions/${resolvedParams.id}?userId=${user.id}`, {
+      const response = await fetch(`/api/sessions/${resolvedParams.id}`, {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          transcript,
-          summary,
-          examinationResults, // Added field
-          diagnosis,
-          prescription,
-          treatmentPlan, // Added field
-          doctorNotes,
-        }),
+        body: formData,
       });
 
       if (!response.ok) {
@@ -244,6 +271,115 @@ export default function EditDocument({ params }: { params: Promise<{ id: string 
                   className="w-full h-32 p-2 border rounded-md"
                   placeholder="Enter any additional notes..."
                 />
+              </div>
+            </div>
+          </div>
+
+          {/* Updated media management section */}
+          <div>
+            <h2 className="text-xl font-semibold mb-4">Media Attachments</h2>
+            <div className="space-y-6">
+              
+              {/* Existing Media Section */}
+              {existingMediaUrls.length > 0 && (
+                <div>
+                  <h3 className="text-lg font-medium mb-3">Current Media</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                    {existingMediaUrls.map((url, index) => {
+                      const fileName = url.split('/').pop() || `Media ${index + 1}`;
+                      const isImage = /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(url);
+                      const isVideo = /\.(mp4|mov|avi|mkv|webm)$/i.test(url);
+                      
+                      return (
+                        <div key={url} className="relative group">
+                          <div className="aspect-square bg-gray-100 rounded-lg overflow-hidden border">
+                            {isImage ? (
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img
+                                src={url}
+                                alt={`Existing media ${index + 1}`}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : isVideo ? (
+                              <video
+                                src={url}
+                                className="w-full h-full object-cover"
+                                controls={false}
+                                muted
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <div className="text-center">
+                                  <div className="text-2xl mb-2">📎</div>
+                                  <div className="text-xs px-2">{fileName}</div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          
+                          {/* Delete button */}
+                          <button
+                            onClick={() => handleDeleteExistingMedia(url)}
+                            className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Delete media"
+                          >
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                          
+                          {/* View/Download link */}
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="absolute bottom-2 right-2 bg-blue-500 text-white rounded px-2 py-1 text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="View full size"
+                          >
+                            View
+                          </a>
+                          
+                          {/* File name overlay */}
+                          <div className="absolute bottom-2 left-2 right-16 bg-black/70 text-white text-xs p-1 rounded truncate">
+                            {fileName}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  
+                  {/* Show pending deletions */}
+                  {mediaToDelete.length > 0 && (
+                    <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-md">
+                      <p className="text-sm text-red-800">
+                        <strong>{mediaToDelete.length}</strong> media file{mediaToDelete.length !== 1 ? 's' : ''} will be deleted when you save changes.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {/* Add New Media Section */}
+              <div>
+                <h3 className="text-lg font-medium mb-3">Add New Media</h3>
+                <div className="p-6 border border-border rounded-md bg-background">
+                  <MediaUpload 
+                    onMediaChange={setMediaFiles}
+                    existingMedia={mediaFiles}
+                  />
+                </div>
+              </div>
+              
+              {/* Summary */}
+              <div className="text-sm text-gray-600 bg-gray-50 p-3 rounded-md">
+                <p>
+                  <strong>Summary:</strong> 
+                  {existingMediaUrls.length > 0 && ` ${existingMediaUrls.length} existing media file${existingMediaUrls.length !== 1 ? 's' : ''}`}
+                  {existingMediaUrls.length > 0 && mediaFiles.length > 0 && ', '}
+                  {mediaFiles.length > 0 && ` ${mediaFiles.length} new media file${mediaFiles.length !== 1 ? 's' : ''} to add`}
+                  {mediaToDelete.length > 0 && `, ${mediaToDelete.length} file${mediaToDelete.length !== 1 ? 's' : ''} to delete`}
+                  {existingMediaUrls.length === 0 && mediaFiles.length === 0 && mediaToDelete.length === 0 && ' No media files'}
+                </p>
               </div>
             </div>
           </div>

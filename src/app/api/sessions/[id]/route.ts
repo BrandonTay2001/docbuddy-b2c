@@ -1,8 +1,9 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { Pool } from 'pg';
 import { generateMedicalDocumentHtml } from '@/lib/pdf';
-import { uploadToR2 } from '@/lib/r2';
+import { uploadToR2, uploadMediaToR2 } from '@/lib/r2';
 
+// Initialize PostgreSQL connection pool
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
@@ -11,7 +12,7 @@ const pool = new Pool({
 });
 
 export async function GET(
-  request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -26,13 +27,14 @@ export async function GET(
       );
     }
 
-    const result = await pool.query(
-      `SELECT ps.*
-       FROM patient_sessions ps
-       WHERE ps.id = $1
-       ORDER BY ps.created_at DESC`,
-      [id]
-    );
+    const query = `
+      SELECT ps.*
+      FROM patient_sessions ps
+      JOIN user_sessions us ON ps.id = us.session_id
+      WHERE ps.id = $1 AND us.user_id = $2;
+    `;
+
+    const result = await pool.query(query, [id, userId]);
 
     if (result.rows.length === 0) {
       return NextResponse.json(
@@ -41,7 +43,10 @@ export async function GET(
       );
     }
 
-    return NextResponse.json({ session: result.rows[0] });
+    return NextResponse.json({
+      session: result.rows[0]
+    });
+
   } catch (error) {
     console.error('Error fetching session:', error);
     return NextResponse.json(
@@ -51,14 +56,213 @@ export async function GET(
   }
 }
 
+interface SessionUpdateData {
+  transcript: string;
+  summary: string;
+  examinationResults: string;
+  diagnosis: string;
+  prescription: string;
+  treatmentPlan: string;
+  doctorNotes: string;
+}
+
 export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const contentType = request.headers.get('content-type');
+    
+    let userId: string;
+    let sessionData: SessionUpdateData;
+    const mediaUrls: string[] = [];
+    let existingMediaUrls: string[] = [];
+    let mediaToDelete: string[] = [];
+
+    if (contentType?.includes('multipart/form-data')) {
+      // Handle FormData (with media files)
+      const formData = await request.formData();
+      
+      userId = formData.get('userId') as string;
+      if (!userId) {
+        return NextResponse.json({ error: 'User ID is required' }, { status: 400 });
+      }
+
+      sessionData = {
+        transcript: formData.get('transcript') as string,
+        summary: formData.get('summary') as string,
+        examinationResults: formData.get('examinationResults') as string,
+        diagnosis: formData.get('diagnosis') as string,
+        prescription: formData.get('prescription') as string,
+        treatmentPlan: formData.get('treatmentPlan') as string,
+        doctorNotes: formData.get('doctorNotes') as string,
+      };
+
+      // Parse existing media URLs to keep
+      const existingMediaStr = formData.get('existingMediaUrls') as string;
+      if (existingMediaStr) {
+        try {
+          existingMediaUrls = JSON.parse(existingMediaStr);
+        } catch (e) {
+          console.error('Failed to parse existing media URLs:', e);
+        }
+      }
+
+      // Parse media URLs to delete
+      const mediaToDeleteStr = formData.get('mediaToDelete') as string;
+      if (mediaToDeleteStr) {
+        try {
+          mediaToDelete = JSON.parse(mediaToDeleteStr);
+        } catch (e) {
+          console.error('Failed to parse media to delete:', e);
+        }
+      }
+
+      // Extract and upload new media files
+      const entries = Array.from(formData.entries());
+      
+      for (const [key, value] of entries) {
+        if (key.startsWith('mediaFile_') && value instanceof File) {
+          try {
+            const mediaUrl = await uploadMediaToR2(value, userId);
+            mediaUrls.push(mediaUrl);
+          } catch (error) {
+            console.error(`Failed to upload media file ${value.name}:`, error);
+            // Continue with other files, don't fail the entire request
+          }
+        }
+      }
+    } else {
+      // Handle JSON (text-only updates)
+      const body = await request.json();
+      userId = body.userId;
+      sessionData = body;
+    }
+
+    if (!userId) {
+      return NextResponse.json({ error: 'User ID is required' }, { status: 400 });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Get current session data
+      const currentSessionResult = await client.query(
+        `SELECT ps.*
+         FROM patient_sessions ps
+         JOIN user_sessions us ON ps.id = us.session_id
+         WHERE ps.id = $1 AND us.user_id = $2`,
+        [id, userId]
+      );
+
+      if (currentSessionResult.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return NextResponse.json(
+          { error: 'Session not found' },
+          { status: 404 }
+        );
+      }
+      
+      // Combine existing media URLs (that aren't being deleted) with new ones
+      const allMediaUrls = [...existingMediaUrls, ...mediaUrls];
+
+      // Update session data
+      const updateQuery = `
+        UPDATE patient_sessions 
+        SET 
+          transcript = $1,
+          summary = $2,
+          examination_results = $3,
+          final_diagnosis = $4,
+          final_prescription = $5,
+          treatment_plan = $6,
+          doctor_notes = $7,
+          media_urls = $8
+        WHERE id = $9
+        RETURNING *;
+      `;
+
+      const updateValues = [
+        sessionData.transcript,
+        sessionData.summary,
+        sessionData.examinationResults,
+        sessionData.diagnosis,
+        sessionData.prescription,
+        sessionData.treatmentPlan,
+        sessionData.doctorNotes,
+        allMediaUrls.length > 0 ? allMediaUrls : null,
+        id
+      ];
+
+      const updateResult = await client.query(updateQuery, updateValues);
+      const updatedSession = updateResult.rows[0];
+
+      // Generate new document
+      const documentData = {
+        patientName: updatedSession.name,
+        patientAge: updatedSession.age.toString(),
+        date: new Date().toLocaleDateString(),
+        summary: sessionData.summary || '',
+        examinationResults: sessionData.examinationResults || undefined,
+        diagnosis: sessionData.diagnosis,
+        prescription: sessionData.prescription,
+        treatmentPlan: sessionData.treatmentPlan || undefined,
+        doctorNotes: sessionData.doctorNotes || undefined,
+        mediaUrls: allMediaUrls.length > 0 ? allMediaUrls : undefined,
+      };
+
+      const htmlContent = generateMedicalDocumentHtml(documentData);
+      const htmlBuffer = Buffer.from(htmlContent, 'utf-8');
+      
+      // Upload updated document to R2
+      const timestamp = Date.now();
+      const documentFileName = `documents/${userId}/${updatedSession.name.replace(/[^a-zA-Z0-9]/g, '_')}_${timestamp}.html`;
+      const documentUrl = await uploadToR2(htmlBuffer, documentFileName, 'text/html');
+
+      // Update document URL
+      await client.query(
+        'UPDATE patient_sessions SET document_url = $1 WHERE id = $2',
+        [documentUrl, id]
+      );
+
+      await client.query('COMMIT');
+
+      return NextResponse.json({
+        success: true,
+        documentUrl,
+        mediaCount: mediaUrls.length,
+        deletedCount: mediaToDelete.length
+      });
+
+    } catch (error) {
+      console.error('Error updating session:', error);
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+  } catch (error) {
+    console.error('Error updating session:', error);
+    return NextResponse.json(
+      { error: 'Failed to update session' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
-    const { searchParams } = new URL(request.url);
-    const userId = searchParams.get('userId');
+    
+    // Get userId from request body
+    const body = await request.json();
+    const { userId } = body;
 
     if (!userId) {
       return NextResponse.json(
@@ -67,140 +271,29 @@ export async function PATCH(
       );
     }
 
-    const body = await request.json();
-    const {
-      transcript,
-      summary,
-      examinationResults, // New field
-      diagnosis,
-      prescription,
-      treatmentPlan,      // New field
-      doctorNotes,
-    } = body;
+    // Verify the session belongs to the user and delete it
+    const result = await pool.query(
+      `DELETE FROM patient_sessions
+       WHERE id = $1
+       RETURNING id`,
+      [id]
+    );
 
-    // Start a transaction
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      // Update session details
-      if (transcript !== undefined || summary !== undefined || 
-          examinationResults !== undefined || // Added check
-          diagnosis !== undefined || prescription !== undefined || 
-          treatmentPlan !== undefined ||      // Added check
-          doctorNotes !== undefined) {
-        const updateFields = [];
-        const values = [];
-        let paramCount = 1;
-
-        if (transcript !== undefined) {
-          updateFields.push(`transcript = $${paramCount}`);
-          values.push(transcript);
-          paramCount++;
-        }
-        if (summary !== undefined) {
-          updateFields.push(`summary = $${paramCount}`);
-          values.push(summary);
-          paramCount++;
-        }
-        if (examinationResults !== undefined) { // Added field
-          updateFields.push(`examination_results = $${paramCount}`);
-          values.push(examinationResults);
-          paramCount++;
-        }
-        if (diagnosis !== undefined) {
-          updateFields.push(`final_diagnosis = $${paramCount}`);
-          values.push(diagnosis);
-          paramCount++;
-        }
-        if (prescription !== undefined) {
-          updateFields.push(`final_prescription = $${paramCount}`);
-          values.push(prescription);
-          paramCount++;
-        }
-        if (treatmentPlan !== undefined) { // Added field
-          updateFields.push(`treatment_plan = $${paramCount}`);
-          values.push(treatmentPlan);
-          paramCount++;
-        }
-        if (doctorNotes !== undefined) {
-          updateFields.push(`doctor_notes = $${paramCount}`);
-          values.push(doctorNotes);
-          paramCount++;
-        }
-
-        if (updateFields.length > 0) {
-          await client.query(
-            `UPDATE patient_sessions 
-             SET ${updateFields.join(', ')}
-             WHERE id = $${paramCount}`,
-            [...values, id]
-          );
-          console.log('Updated session details');
-        }
-      }
-
-      // Get the updated session data
-      const sessionResult = await client.query(
-        `SELECT name, age, summary, examination_results, final_diagnosis as diagnosis, 
-                final_prescription as prescription, treatment_plan, doctor_notes
-         FROM patient_sessions
-         WHERE id = $1`,
-        [id]
+    if (result.rows.length === 0) {
+      return NextResponse.json(
+        { error: 'Session not found or access denied' },
+        { status: 404 }
       );
-
-      if (sessionResult.rows.length === 0) {
-        throw new Error('Session not found after update');
-      }
-
-      const session = sessionResult.rows[0];
-
-      // Generate new document
-      const documentHtml = generateMedicalDocumentHtml({
-        patientName: session.name,
-        patientAge: session.age.toString(),
-        date: new Date().toLocaleDateString(),
-        summary: session.summary || '',
-        examinationResults: session.examination_results || '', // New field
-        diagnosis: session.diagnosis || '',
-        prescription: session.prescription || '',
-        treatmentPlan: session.treatment_plan || '', // New field
-        doctorNotes: session.doctor_notes || '',
-      });
-
-      // Upload to R2
-      const documentUrl = await uploadToR2(
-        new Blob([documentHtml], { type: 'text/html' }),
-        `documents/${userId}/${id}.html`,
-        'text/html'
-      );
-
-      console.log('Document URL:', documentUrl);
-
-      // Update document URL in database
-      await client.query(
-        `UPDATE patient_sessions 
-         SET document_url = $1
-         WHERE id = $2`,
-        [documentUrl, id]
-      );
-
-      await client.query('COMMIT');
-
-      return NextResponse.json({ 
-        success: true,
-        documentUrl 
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
     }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Session deleted successfully'
+    });
   } catch (error) {
-    console.error('Error updating session:', error);
+    console.error('Error deleting session:', error);
     return NextResponse.json(
-      { error: 'Failed to update session' },
+      { error: 'Failed to delete session' },
       { status: 500 }
     );
   }

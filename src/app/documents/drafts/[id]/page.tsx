@@ -1,330 +1,249 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import Button from '@/components/Button';
 import Input from '@/components/Input';
 import AudioRecorder from '@/components/AudioRecorder';
 import AudioPlayer from '@/components/AudioPlayer';
 import MediaUpload from '@/components/MediaUpload';
-import { transcribeAudioElevenlabs } from '@/lib/elevenlabs';
 import { getUserProfile } from '@/lib/auth';
 import { languageOptions } from '@/lib/languageOptions';
+import { transcribeAudioElevenlabs } from '@/lib/elevenlabs';
 
-// Step enum to track current step in the flow
-enum Step {
-  RECORD = 0,
-  REVIEW = 1,
-  COMPLETE = 2
+interface Draft {
+  id: string;
+  user_id: string;
+  audio_url: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
 }
 
-export default function NewSession() {
-  // Basic state
+enum Step {
+  EDIT = 0,
+  RECORD = 1,
+  REVIEW = 2,
+  COMPLETE = 3
+}
+
+export default function DraftPage() {
+  const router = useRouter();
+  const params = useParams();
+  const draftId = params.id as string;
+  
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [title, setTitle] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [isMounted, setIsMounted] = useState(false);
+  const [error, setError] = useState('');
+  const [currentStep, setCurrentStep] = useState<Step>(Step.EDIT);
+  
+  // Recording state
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [combinedAudioUrl, setCombinedAudioUrl] = useState<string | null>(null);
+  const [selectedLanguage, setSelectedLanguage] = useState<string | null>(null);
+  
+  // Session data state (matching /session/new)
   const [transcript, setTranscript] = useState('');
-  const [suggestedDiagnosis, setSuggestedDiagnosis] = useState('');
   const [summary, setSummary] = useState('');
+  const [suggestedDiagnosis, setSuggestedDiagnosis] = useState('');
   const [suggestedPrescription, setSuggestedPrescription] = useState('');
   const [patientName, setPatientName] = useState('');
   const [patientAge, setPatientAge] = useState('');
   const [finalDiagnosis, setFinalDiagnosis] = useState('');
   const [finalPrescription, setFinalPrescription] = useState('');
-  const [doctorNotes, setDoctorNotes] = useState('');
-  const [error, setError] = useState('');
-  const [isMounted, setIsMounted] = useState(false);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [showTranscript, setShowTranscript] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-  const [selectedLanguage, setSelectedLanguage] = useState<string | null>(null);
-  const [currentStep, setCurrentStep] = useState<Step>(Step.RECORD);
-  
-  // Additional state for assessment
   const [examinationResults, setExaminationResults] = useState('');
   const [treatmentPlan, setTreatmentPlan] = useState('');
-  const [mediaFiles, setMediaFiles] = useState<File[]>([]); // Changed to File[]
-  
-  // Refs
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const recorderMicRef = useRef<HTMLElement | null>(null);
-  const recorderStopRef = useRef<HTMLElement | null>(null);
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [doctorNotes, setDoctorNotes] = useState('');
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [copySuccess, setCopySuccess] = useState(false);
+  const [mediaFiles, setMediaFiles] = useState<File[]>([]); // New field
 
-  // Drag and drop state
-  const [isDragging, setIsDragging] = useState(false);
-  const dropAreaRef = useRef<HTMLDivElement>(null);
-
-  const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
-
-  const handleDragEnter = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!isDragging) {
-      setIsDragging(true);
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsDragging(false);
-    
-    if (isUploading || isProcessing) return;
-    
-    const files = e.dataTransfer.files;
-    if (files.length) {
-      handleFile(files[0]);
-    }
-  };
-
-  const handleFile = async (file: File) => {
-    if (!file) return;
-    
-    setIsUploading(true);
-    setError('');
-    
+  const fetchDraft = useCallback(async () => {
     try {
-      if (!file.type.startsWith('audio/')) {
-        throw new Error('Please upload an audio file (mp3, wav, etc.)');
+      const user = await getUserProfile();
+      if (!user) {
+        throw new Error('User not authenticated');
       }
-      
-      if (file.size > 30 * 1024 * 1024) {
-        throw new Error('File size exceeds 30MB limit');
+
+      const response = await fetch(`/api/drafts/${draftId}?userId=${user.id}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch draft');
       }
-      
-      const url = URL.createObjectURL(file);
-      setAudioUrl(url);
-      
-      // Move to the review step instead of processing immediately
-      setCurrentStep(Step.REVIEW);
-      
-    } catch (error: unknown) {
-      console.error('Error uploading file:', error);
-      setError(error instanceof Error ? error.message : 'An error occurred while processing the audio file.');
+
+      const data = await response.json();
+      setDraft(data.draft);
+      setTitle(data.draft.title || `Draft - ${new Date(data.draft.updated_at).toLocaleString()}`);
+    } catch (error) {
+      console.error('Error fetching draft:', error);
+      setError('Failed to load draft');
     } finally {
-      setIsUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      setIsLoading(false);
     }
-  };
+  }, [draftId]); // Add dependencies for this function
+
 
   useEffect(() => {
     setIsMounted(true);
+    fetchDraft();
+  }, [fetchDraft]);
+
+  const handleTitleSave = async () => {
+    if (!draft) return;
     
-    timeoutRef.current = setTimeout(() => {
-      recorderMicRef.current = document.querySelector('.audio-recorder-mic') as HTMLElement;
-      recorderStopRef.current = document.querySelector('.audio-recorder-stop') as HTMLElement;
-    }, 1000);
-    
-    return () => {
-      setIsMounted(false);
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
-  }, []);
+    try {
+      const user = await getUserProfile();
+      if (!user) throw new Error('User not authenticated');
+
+      const response = await fetch(`/api/drafts/${draftId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id, title }),
+      });
+
+      if (!response.ok) throw new Error('Failed to update title');
+      
+      setDraft(prev => prev ? { ...prev, title } : null);
+    } catch (error) {
+      console.error('Error updating title:', error);
+      setError('Failed to update title');
+    }
+  };
+
+  const handleContinueRecording = () => {
+    setCurrentStep(Step.RECORD);
+  };
 
   const handleStartRecording = () => {
     setIsRecording(true);
-    
-    if (!recorderMicRef.current) {
-      recorderMicRef.current = document.querySelector('.audio-recorder-mic') as HTMLElement;
-    }
-    
-    if (isMounted && recorderMicRef.current) {
-      recorderMicRef.current.click();
-    }
   };
 
   const handleStopRecording = () => {
     setIsRecording(false);
+  };
+
+  const handleRecordingComplete = async (newAudioBlob: Blob) => {
+    if (!draft) return;
     
-    if (!recorderStopRef.current) {
-      recorderStopRef.current = document.querySelector('.audio-recorder-stop') as HTMLElement;
-    }
-    
-    if (isMounted && recorderStopRef.current) {
-      recorderStopRef.current.click();
-    }
-  };
-
-  const handlePauseRecording = async (audioBlob: Blob) => {
-    try {
-      
-      // Don't set isProcessing to true as it would show loading indicator
-      setError('');
-
-      const user = await getUserProfile();
-      if (!user) {
-        throw new Error('User not authenticated');
-      }
-
-      // Convert blob to base64
-      const base64Audio = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          if (typeof reader.result === 'string') {
-            resolve(reader.result);
-          } else {
-            reject(new Error('Failed to convert audio to base64'));
-          }
-        };
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(audioBlob);
-      });
-
-      // Save or update draft without redirecting
-      const endpoint = `/api/drafts${currentDraftId ? `/${currentDraftId}` : ''}`;
-      const response = await fetch(endpoint, {
-        method: currentDraftId ? 'PUT' : 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          userId: user.id,
-          audioBlob: base64Audio
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to save draft');
-      }
-
-      const data = await response.json();
-      if (!currentDraftId) {
-        setCurrentDraftId(data.draftId);
-      }
-    } catch (error) {
-      console.error('Error saving draft:', error);
-      setError('An error occurred while saving the draft. Please try again.');
-    }
-  };
-  
-  // Add new resume handler
-  const handleResumeRecording = () => {
-    // No need to do anything else - just update UI state
-  };
-
-  const handleRecordingComplete = async (audioBlob: Blob) => {
-    // Save final draft
     try {
       setIsProcessing(true);
       
+      const originalResponse = await fetch(draft.audio_url);
+      const originalBlob = await originalResponse.blob();
+      
+      const combinedBlob = await combineAudioBlobs(originalBlob, newAudioBlob);
+      
+      const combinedUrl = URL.createObjectURL(combinedBlob);
+      setCombinedAudioUrl(combinedUrl);
+      
       const user = await getUserProfile();
-      if (!user) {
-        throw new Error('User not authenticated');
-      }
+      if (!user) throw new Error('User not authenticated');
+
+      const base64Audio = await blobToBase64(combinedBlob);
       
-      // Convert blob to base64
-      const base64Audio = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          if (typeof reader.result === 'string') {
-            resolve(reader.result);
-          } else {
-            reject(new Error('Failed to convert audio to base64'));
-          }
-        };
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(audioBlob);
-      });
-      
-      // Save or update draft with final audio
-      const endpoint = `/api/drafts${currentDraftId ? `/${currentDraftId}` : ''}`;
-      const response = await fetch(endpoint, {
-        method: currentDraftId ? 'PUT' : 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+      const response = await fetch(`/api/drafts/${draftId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: user.id,
           audioBlob: base64Audio,
-          isFinal: true // Mark this as the final version
+          isFinal: true
         }),
       });
 
-      if (!response.ok) {
-        throw new Error('Failed to save final draft');
-      }
-
-      const data = await response.json();
-      if (!currentDraftId) {
-        setCurrentDraftId(data.draftId);
-      }
+      if (!response.ok) throw new Error('Failed to update draft');
       
-      const url = URL.createObjectURL(audioBlob);
-      setAudioUrl(url);
-      
-      // Proceed to review step
       setCurrentStep(Step.REVIEW);
     } catch (error) {
-      console.error('Error in handleRecordingComplete:', error);
-      setError('An error occurred while saving the recording. Please try again.');
+      console.error('Error combining audio:', error);
+      setError('Failed to combine audio recordings');
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // Process the audio when the user decides to transcribe
-  const processAudioBlob = async () => {
-    if (!audioUrl) return;
+  const handleProceedWithoutRecording = async () => {
+    if (!draft) return;
+    
+    try {
+      setIsProcessing(true);
+      
+      // Use the existing draft audio directly
+      setCombinedAudioUrl(draft.audio_url);
+      setCurrentStep(Step.REVIEW);
+    } catch (error) {
+      console.error('Error proceeding without recording:', error);
+      setError('Failed to proceed with existing audio');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const combineAudioBlobs = async (blob1: Blob, blob2: Blob): Promise<Blob> => {
+    const arrayBuffer1 = await blob1.arrayBuffer();
+    const arrayBuffer2 = await blob2.arrayBuffer();
+    
+    const combined = new Uint8Array(arrayBuffer1.byteLength + arrayBuffer2.byteLength);
+    combined.set(new Uint8Array(arrayBuffer1), 0);
+    combined.set(new Uint8Array(arrayBuffer2), arrayBuffer1.byteLength);
+    
+    return new Blob([combined], { type: 'audio/mp3' });
+  };
+
+  const blobToBase64 = (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
+        } else {
+          reject(new Error('Failed to convert blob to base64'));
+        }
+      };
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  };
+
+  const processAudio = async () => {
+    if (!combinedAudioUrl) return;
     
     setIsProcessing(true);
     setError('');
     
     try {
-      // Convert audio URL to blob for transcription
-      const response = await fetch(audioUrl);
+      const response = await fetch(combinedAudioUrl);
       const audioBlob = await response.blob();
       
       const user = await getUserProfile();
-      if (!user) {
-        throw new Error('User not authenticated');
-      }
+      if (!user) throw new Error('User not authenticated');
       
       const transcriptText = await transcribeAudioElevenlabs(audioBlob, user.id, selectedLanguage);
       setTranscript(transcriptText);
       
-      // Use POST method with data in request body
       const analysisResponse = await fetch('/api/sessions/analyze', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: user.id,
           transcript: transcriptText
         }),
       });
       
-      if (!analysisResponse.ok) {
-        throw new Error('Failed to analyze transcript');
-      }
+      if (!analysisResponse.ok) throw new Error('Failed to analyze transcript');
       
       const { analysis } = await analysisResponse.json();
       
       setSummary(analysis.summary);
       setSuggestedDiagnosis(analysis.suggestedDiagnosis);
       setSuggestedPrescription(analysis.suggestedPrescription);
-      
       setFinalDiagnosis(analysis.suggestedDiagnosis);
       setFinalPrescription(analysis.suggestedPrescription);
       
       setCurrentStep(Step.COMPLETE);
-      
     } catch (error) {
       console.error('Error processing audio:', error);
       const errorMessage = error instanceof Error ? error.message : 'An error occurred while processing the audio. Please try again.';
@@ -334,17 +253,6 @@ export default function NewSession() {
     }
   };
 
-  // Update the file upload handler to use the common function
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      handleFile(file);
-    }
-  };
-
-  // Add copyToClipboard function before the handleGenerateDocument function
-  const [copySuccess, setCopySuccess] = useState(false);
-  
   const copyToClipboard = () => {
     try {
       const formattedText = `Patient: ${patientName || "[Name]"}; Age: ${patientAge || "[Age]"}
@@ -366,7 +274,6 @@ ${treatmentPlan}`;
       
       navigator.clipboard.writeText(formattedText);
       
-      // Show success message in green instead of using error state
       setCopySuccess(true);
       setTimeout(() => {
         setCopySuccess(false);
@@ -406,9 +313,7 @@ ${treatmentPlan}`;
       formData.append('examinationResults', examinationResults);
       formData.append('treatmentPlan', treatmentPlan);
       formData.append('doctorNotes', doctorNotes);
-      if (currentDraftId) {
-        formData.append('draftId', currentDraftId);
-      }
+      formData.append('draftId', draftId);
       
       // Add media files
       mediaFiles.forEach((file, index) => {
@@ -426,14 +331,18 @@ ${treatmentPlan}`;
 
       const { documentUrl } = await sessionResponse.json();
       
-      // Clear the current draft ID since it will be deleted
-      setCurrentDraftId(null);
-      
       if (isMounted && documentUrl) {
         window.open(documentUrl, '_blank');
       }
       
-      window.location.href = '/dashboard';
+      // Delete the draft after successful completion
+      await fetch(`/api/drafts/${draftId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId: user.id }),
+      });
+      
+      router.push('/dashboard');
       
     } catch (error) {
       console.error('Error generating document:', error);
@@ -442,14 +351,6 @@ ${treatmentPlan}`;
       setIsProcessing(false);
     }
   };
-
-  useEffect(() => {
-    return () => {
-      if (audioUrl) {
-        URL.revokeObjectURL(audioUrl);
-      }
-    };
-  }, [audioUrl]);
 
   // Add age validation function
   const validateAge = (value: string): string => {
@@ -475,34 +376,56 @@ ${treatmentPlan}`;
     return <div className="min-h-screen" />;
   }
 
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="animate-spin h-8 w-8 border-2 border-accent rounded-full border-t-transparent" />
+      </div>
+    );
+  }
+
+  if (!draft) {
+    return (
+      <div className="min-h-screen p-6 md:p-12">
+        <div className="max-w-3xl mx-auto text-center">
+          <h1 className="text-2xl font-bold mb-4">Draft Not Found</h1>
+          <Link href="/documents">
+            <Button>Back to Documents</Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <main className="min-h-screen p-6 md:p-12">
       <div className="max-w-3xl mx-auto">
         <header className="mb-8">
           <div className="flex justify-between items-center">
-            <h1 className="text-3xl font-bold">New Patient Session</h1>
-            <div className="flex gap-4">
-              <Button 
-                variant="secondary"
-                onClick={() => window.open('/session/new', '_blank')}
-              >
-                Parallel Session
-              </Button>
-              <Link href="/dashboard">
-                <Button variant="secondary">Back to Dashboard</Button>
-              </Link>
-            </div>
+            <h1 className="text-3xl font-bold">Edit Draft</h1>
+            <Link href="/documents">
+              <Button variant="secondary">Back to Documents</Button>
+            </Link>
           </div>
         </header>
-        
+
         {/* Progress steps */}
         <div className="mb-8">
           <div className="flex items-center justify-between w-full mb-2">
             <div className="flex items-center">
               <div className={`flex items-center justify-center w-8 h-8 rounded-full ${
-                currentStep >= Step.RECORD ? 'bg-accent text-white' : 'bg-gray-200 text-gray-500'
+                currentStep >= Step.EDIT ? 'bg-accent text-white' : 'bg-gray-200 text-gray-500'
               }`}>
                 1
+              </div>
+              <span className="ml-2 text-sm">Edit</span>
+            </div>
+            <div className={`flex-1 h-1 mx-4 ${currentStep >= Step.RECORD ? 'bg-accent' : 'bg-gray-200'}`} />
+            <div className="flex items-center">
+              <div className={`flex items-center justify-center w-8 h-8 rounded-full ${
+                currentStep >= Step.RECORD ? 'bg-accent text-white' : 'bg-gray-200 text-gray-500'
+              }`}>
+                2
               </div>
               <span className="ml-2 text-sm">Record</span>
             </div>
@@ -511,7 +434,7 @@ ${treatmentPlan}`;
               <div className={`flex items-center justify-center w-8 h-8 rounded-full ${
                 currentStep >= Step.REVIEW ? 'bg-accent text-white' : 'bg-gray-200 text-gray-500'
               }`}>
-                2
+                3
               </div>
               <span className="ml-2 text-sm">Review</span>
             </div>
@@ -520,121 +443,105 @@ ${treatmentPlan}`;
               <div className={`flex items-center justify-center w-8 h-8 rounded-full ${
                 currentStep >= Step.COMPLETE ? 'bg-accent text-white' : 'bg-gray-200 text-gray-500'
               }`}>
-                3
+                4
               </div>
               <span className="ml-2 text-sm">Complete</span>
             </div>
           </div>
         </div>
-        
-        {(isProcessing || isUploading) && (
+
+        {isProcessing && (
           <div className="flex justify-center items-center p-12">
             <div className="animate-spin h-8 w-8 border-2 border-accent rounded-full border-t-transparent mr-2" />
-            <p>{isUploading ? 'Uploading...' : 'Processing...'}</p>
+            <p>Processing...</p>
           </div>
         )}
-        
-        {/* Step 1: Record Audio */}
-        {currentStep === Step.RECORD && !isProcessing && !isUploading && (
-          <div className="mb-8">
-            <p className="mb-4">
-              Start recording your patient session or upload an existing audio file. Paused or incomplete recodings will be saved as drafts.
-            </p>
-            
-            <div className="flex flex-col gap-4 mb-4">
+
+        {/* Step 1: Edit Draft */}
+        {currentStep === Step.EDIT && !isProcessing && (
+          <div className="space-y-6">
+            <div className="p-6 border border-border rounded-md bg-background">
+              <h2 className="text-xl font-bold mb-4">Draft Information</h2>
+              
+              <div className="mb-4">
+                <Input
+                  label="Title"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Enter a title for this draft"
+                  fullWidth
+                />
+                <div className="flex justify-end mt-2">
+                  <Button 
+                    variant="secondary" 
+                    onClick={handleTitleSave}
+                  >
+                    Save Title
+                  </Button>
+                </div>
+              </div>
+              
+              <div className="mb-4">
+                <h3 className="font-medium mb-2">Original Recording</h3>
+                <AudioPlayer audioUrl={draft.audio_url} />
+              </div>
+              
+              <div className="text-sm text-gray-500 mb-4">
+                <p>Created: {new Date(draft.created_at).toLocaleString()}</p>
+                <p>Last updated: {new Date(draft.updated_at).toLocaleString()}</p>
+              </div>
+              
+              <div className="flex justify-end">
+                <Button onClick={handleContinueRecording}>
+                  Continue
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Step 2: Continue Recording */}
+        {currentStep === Step.RECORD && !isProcessing && (
+          <div className="space-y-6">
+            <div className="p-6 border border-border rounded-md bg-background">
+              <h2 className="text-xl font-bold mb-4">Continue Recording</h2>
+              <p className="mb-4">
+                Record additional content to add to your existing draft.
+              </p>
+              
               <AudioRecorder
                 onRecordingComplete={handleRecordingComplete}
                 isRecording={isRecording}
                 onStartRecording={handleStartRecording}
                 onStopRecording={handleStopRecording}
-                onPauseRecording={handlePauseRecording}
-                onResumeRecording={handleResumeRecording}
               />
               
-              <div className="flex items-center justify-center">
-                <div className="flex-grow h-px bg-border" />
-                <span className="px-4 text-sm text-muted-foreground font-medium">OR</span>
-                <div className="flex-grow h-px bg-border" />
-              </div>
-              
-              <div className="w-full p-6 border border-border rounded-md bg-background">
-                <div className="flex justify-between items-center mb-4">
-                  <h3>Upload Audio</h3>
-                </div>
-                
-                <div
-                  ref={dropAreaRef}
-                  className={`flex flex-col items-center justify-center p-6 border-2 border-dashed rounded-md transition-colors w-full ${
-                    isDragging 
-                      ? 'border-accent bg-accent/5' 
-                      : 'border-border hover:border-accent/50'
-                  }`}
-                  onDragEnter={handleDragEnter}
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                  onClick={() => fileInputRef.current?.click()}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      fileInputRef.current?.click();
-                    }
-                  }}
-                  style={{ cursor: isUploading || isProcessing ? 'not-allowed' : 'pointer' }}
+              <div className="flex justify-between mt-6">
+                <Button 
+                  variant="secondary" 
+                  onClick={() => setCurrentStep(Step.EDIT)}
                 >
-                  <input
-                    type="file"
-                    accept="audio/*"
-                    onChange={handleFileUpload}
-                    className="hidden"
-                    ref={fileInputRef}
-                    disabled={isUploading || isProcessing}
-                  />
-                  
-                  <svg 
-                    xmlns="http://www.w3.org/2000/svg" 
-                    className="h-12 w-12 text-muted-foreground mb-3"
-                    fill="none" 
-                    viewBox="0 0 24 24" 
-                    stroke="currentColor"
-                    aria-hidden="true"
-                    role="img"
-                  >
-                    <title>Upload icon</title>
-                    <path 
-                      strokeLinecap="round" 
-                      strokeLinejoin="round" 
-                      strokeWidth={1.5} 
-                      d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" 
-                    />
-                  </svg>
-                  
-                  <p className="mb-2 text-sm font-medium">
-                    {isDragging ? "Drop to upload" : "Drag audio file here or click to browse"}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Supported formats: MP3, WAV, M4A, etc. (Max 30MB)
-                  </p>
-                </div>
+                  Back to Edit
+                </Button>
+                <Button 
+                  variant="secondary"
+                  onClick={handleProceedWithoutRecording}
+                >
+                  Proceed Without Further Recording
+                </Button>
               </div>
             </div>
-            
-            {error && (
-              <div className="mt-4 p-3 text-sm bg-red-100 text-red-800 rounded-md">
-                {error}
-              </div>
-            )}
           </div>
         )}
-        
-        {/* Step 2: Review Audio and Select Language */}
-        {currentStep === Step.REVIEW && audioUrl && (
-          <div className="mb-8">
-            <div className="p-6 border border-border rounded-md bg-background mb-4">
-              <h2 className="text-xl font-bold mb-4">Review Recording</h2>
+
+        {/* Step 3: Review Combined Audio */}
+        {currentStep === Step.REVIEW && combinedAudioUrl && !isProcessing && (
+          <div className="space-y-6">
+            <div className="p-6 border border-border rounded-md bg-background">
+              <h2 className="text-xl font-bold mb-4">Review Combined Recording</h2>
               
               <div className="mb-6">
-                {/* Replace WaveVisualizer with AudioPlayer */}
-                <AudioPlayer audioUrl={audioUrl} />
+                <AudioPlayer audioUrl={combinedAudioUrl} />
               </div>
               
               <div className="mb-6">
@@ -656,23 +563,16 @@ ${treatmentPlan}`;
                     </option>
                   ))}
                 </select>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Choose the majority spoken language in the recording or select `&#34;`Detect`&#34;` for automatic detection.
-                </p>
               </div>
               
               <div className="flex justify-between">
                 <Button 
                   variant="secondary" 
-                  onClick={() => {
-                    if (audioUrl) URL.revokeObjectURL(audioUrl);
-                    setAudioUrl(null);
-                    setCurrentStep(Step.RECORD);
-                  }}
+                  onClick={() => setCurrentStep(Step.RECORD)}
                 >
-                  Back
+                  Back to Recording
                 </Button>
-                <Button onClick={processAudioBlob}>
+                <Button onClick={processAudio}>
                   Transcribe & Analyze
                 </Button>
               </div>
@@ -689,15 +589,14 @@ ${treatmentPlan}`;
             )}
           </div>
         )}
-        
-        {/* Step 3: Complete - Display Analysis & Continue with Session */}
+
+        {/* Step 4: Complete - Full Session Form */}
         {currentStep === Step.COMPLETE && (
           <>
-            {audioUrl && (
+            {combinedAudioUrl && (
               <div className="mb-6 p-6 rounded-md bg-background">
                 <h2 className="text-xl font-bold mb-4">Recording</h2>
-                {/* Replace WaveVisualizer with AudioPlayer */}
-                <AudioPlayer audioUrl={audioUrl} />
+                <AudioPlayer audioUrl={combinedAudioUrl} />
               </div>
             )}
 
@@ -721,7 +620,6 @@ ${treatmentPlan}`;
               )}
             </div>
 
-            {/* Moved Patient Information section to appear before Patient Complaint & Medical History */}
             <div className="mb-6 p-6 border border-border rounded-md bg-background">
               <h2 className="text-xl font-bold mb-4">Patient Information</h2>
               
@@ -860,14 +758,12 @@ ${treatmentPlan}`;
               </div>
             )}
             
-            {/* Add success message */}
             {copySuccess && (
               <div className="mb-4 p-3 text-sm bg-green-100 text-green-800 rounded-md">
                 Copied to clipboard!
               </div>
             )}
             
-            {/* Change flex to space-between instead of justify-end */}
             <div className="flex justify-between gap-4">
               <Button 
                 variant="secondary"

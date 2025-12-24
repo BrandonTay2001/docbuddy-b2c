@@ -40,4 +40,32 @@ export async function uploadToR2(
     console.error('Error uploading to R2:', error);
     throw new Error('Failed to upload file to R2');
   }
-} 
+}
+
+// New function specifically for media uploads
+export async function uploadMediaToR2(
+  file: File,
+  userId: string,
+  sessionId?: string
+): Promise<string> {
+  try {
+    const timestamp = Date.now();
+    const sanitizedFileName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const fileName = `media/${userId}/${sessionId || 'manual'}_${timestamp}_${sanitizedFileName}`;
+    
+    const buffer = Buffer.from(await file.arrayBuffer());
+    
+    const command = new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET_NAME,
+      Key: fileName,
+      Body: buffer,
+      ContentType: file.type,
+    });
+
+    await s3Client.send(command);
+    return `${process.env.R2_PUBLIC_DOMAIN}/${fileName}`;
+  } catch (error) {
+    console.error('Error uploading media to R2:', error);
+    throw new Error('Failed to upload media file');
+  }
+}

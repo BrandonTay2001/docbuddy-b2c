@@ -3,11 +3,12 @@ interface MedicalDocumentData {
   patientAge: string;
   date: string;
   summary: string;
-  examinationResults?: string; // New field
+  examinationResults?: string;
   diagnosis: string;
   prescription: string;
-  treatmentPlan?: string;      // New field
+  treatmentPlan?: string;
   doctorNotes?: string;
+  mediaUrls?: string[]; // New field
 }
 
 // Helper function to sanitize text for HTML
@@ -19,6 +20,16 @@ const sanitizeHtml = (text: string): string => {
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;')
     .replace(/\n/g, '<br>');
+};
+
+// Helper function to determine if URL is an image
+const isImageUrl = (url: string): boolean => {
+  return /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(url);
+};
+
+// Helper function to determine if URL is a video
+const isVideoUrl = (url: string): boolean => {
+  return /\.(mp4|mov|avi|mkv|webm)$/i.test(url);
 };
 
 export function generateMedicalDocumentHtml(data: MedicalDocumentData): string {
@@ -92,6 +103,50 @@ export function generateMedicalDocumentHtml(data: MedicalDocumentData): string {
           padding-left: 10px;
         }
         
+        .media-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+          gap: 15px;
+          margin-top: 15px;
+        }
+        
+        .media-item {
+          border: 1px solid #ddd;
+          border-radius: 8px;
+          overflow: hidden;
+          background: #f9f9f9;
+        }
+        
+        .media-item img {
+          width: 100%;
+          height: 150px;
+          object-fit: cover;
+          display: block;
+        }
+        
+        .media-item video {
+          width: 100%;
+          height: 150px;
+          object-fit: cover;
+          display: block;
+        }
+        
+        .media-caption {
+          padding: 8px;
+          font-size: 12px;
+          color: #666;
+          word-break: break-all;
+        }
+        
+        .media-link {
+          color: #0066cc;
+          text-decoration: none;
+        }
+        
+        .media-link:hover {
+          text-decoration: underline;
+        }
+        
         .print-button {
           background-color: #4CAF50;
           color: white;
@@ -159,6 +214,53 @@ export function generateMedicalDocumentHtml(data: MedicalDocumentData): string {
       <div class="section">
         <div class="section-title">Additional Notes</div>
         <div class="section-content">${sanitizedNotes}</div>
+      </div>
+      ` : ''}
+      
+      ${data.mediaUrls && data.mediaUrls.length > 0 ? `
+      <div class="section">
+        <div class="section-title">Medical Images & Videos</div>
+        <div class="section-content">
+          <div class="media-grid">
+            ${data.mediaUrls.map((url, index) => {
+              const fileName = url.split('/').pop() || `Media ${index + 1}`;
+              
+              if (isImageUrl(url)) {
+                return `
+                  <div class="media-item">
+                    <img src="${url}" alt="Medical Image ${index + 1}" />
+                    <div class="media-caption">
+                      <a href="${url}" class="media-link" target="_blank">${fileName}</a>
+                    </div>
+                  </div>
+                `;
+              } else if (isVideoUrl(url)) {
+                return `
+                  <div class="media-item">
+                    <video controls>
+                      <source src="${url}" type="video/mp4">
+                      Your browser does not support the video tag.
+                    </video>
+                    <div class="media-caption">
+                      <a href="${url}" class="media-link" target="_blank">${fileName}</a>
+                    </div>
+                  </div>
+                `;
+              } else {
+                return `
+                  <div class="media-item">
+                    <div style="padding: 20px; text-align: center;">
+                      <div style="font-size: 24px; margin-bottom: 10px;">📎</div>
+                      <div class="media-caption">
+                        <a href="${url}" class="media-link" target="_blank">${fileName}</a>
+                      </div>
+                    </div>
+                  </div>
+                `;
+              }
+            }).join('')}
+          </div>
+        </div>
       </div>
       ` : ''}
       

@@ -76,7 +76,6 @@ export async function analyzeMedicalTranscript(
   suggestedDiagnosis: string;
   suggestedPrescription: string;
 }> {
-  console.log('Analyzing transcript:', transcript);
   try {
     // Generate summary
     const summary = await generateSummary(transcript, summaryPrompt);
